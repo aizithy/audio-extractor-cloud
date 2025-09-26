@@ -189,22 +189,26 @@ def get_enhanced_ydl_opts(output_path: str, extract_audio: bool = True,
 
 def get_bilibili_enhanced_opts(output_path: str, extract_audio: bool = True, 
                               audio_format: str = "mp3") -> Dict:
-    """B站专用增强配置"""
+    """B站专用增强配置 - 支持多种音频格式"""
     
-    audio_quality_map = {"best": "0", "good": "128", "normal": "96"}
+    # B站常见的音频格式ID，按质量从高到低排序
+    bilibili_audio_formats = [
+        '30280',  # 高质量音频 (~123k)
+        '30232',  # 中等质量音频 (~74k) 
+        '30216',  # 基础质量音频 (~39k)
+        'bestaudio',  # 通用最佳音频
+        'best'    # 最后的回退选项
+    ]
+    
+    audio_format_selector = '/'.join(bilibili_audio_formats)
     
     opts = {
-        'format': 'bestaudio/best' if extract_audio else 'best[height<=720]/best',
+        'format': audio_format_selector if extract_audio else 'best[height<=720]/best',
         'outtmpl': output_path,
         'quiet': False,
         'no_warnings': False,
         'retries': 3,
         'socket_timeout': 30,
-        'extractor_args': {
-            'bilibili': {
-                'play_url_ssl': True,
-            }
-        },
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
             'Referer': 'https://www.bilibili.com/',
