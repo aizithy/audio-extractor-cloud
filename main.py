@@ -315,20 +315,84 @@ async def process_video_task(task_id: str, request: ProcessRequest):
                 "message": "提取音频中..."
             })
             
-            audio_opts = config_func(
-                audio_path, 
-                extract_audio=True, 
-                audio_format=request.audio_format
-            )
-            
-            with yt_dlp.YoutubeDL(audio_opts) as ydl:
-                ydl.download([request.url])
-            
-            # 查找生成的音频文件
-            audio_files = list(TEMP_DIR.glob(f"audio_{base_filename}.*"))
-            if audio_files:
-                audio_file = audio_files[0].name
-                tasks[task_id]["audio_file"] = audio_file
+            # B站智能处理逻辑
+            if 'bilibili.com' in request.url.lower():
+                try:
+                    # 先获取可用格式
+                    info_opts_bilibili = {'quiet': True, 'no_warnings': True}
+                    with yt_dlp.YoutubeDL(info_opts_bilibili) as ydl:
+                        info = ydl.extract_info(request.url, download=False)
+                        formats = info.get('formats', [])
+                        
+                        # 找到音频格式
+                        audio_formats = [f for f in formats if f.get('vcodec') == 'none' and f.get('acodec') != 'none']
+                        
+                        if audio_formats:
+                            # 按比特率排序，选择最好的
+                            audio_formats.sort(key=lambda x: x.get('abr', 0) or 0, reverse=True)
+                            best_format = audio_formats[0]
+                            format_id = best_format.get('format_id')
+                            
+                            print(f"B站智能选择格式: {format_id} (比特率: {best_format.get('abr', 'unknown')}k)")
+                            
+                            # 使用选定的格式进行下载
+                            smart_opts = {
+                                'format': format_id,
+                                'outtmpl': audio_path,
+                                'quiet': False,
+                                'postprocessors': [{
+                                    'key': 'FFmpegExtractAudio',
+                                    'preferredcodec': request.audio_format,
+                                    'preferredquality': '128',
+                                }],
+                            }
+                            
+                            with yt_dlp.YoutubeDL(smart_opts) as ydl:
+                                ydl.download([request.url])
+                            
+                            # 查找生成的音频文件
+                            audio_files = list(TEMP_DIR.glob(f"audio_{base_filename}.*"))
+                            if audio_files:
+                                audio_file = audio_files[0].name
+                                tasks[task_id]["audio_file"] = audio_file
+                                print(f"B站智能提取成功: {audio_file}")
+                            else:
+                                raise Exception("B站智能提取：音频文件生成失败")
+                        else:
+                            raise Exception("B站智能提取：没有找到音频格式")
+                            
+                except Exception as smart_error:
+                    print(f"B站智能提取失败，使用标准方式: {smart_error}")
+                    # 回退到标准方式
+                    audio_opts = config_func(
+                        audio_path, 
+                        extract_audio=True, 
+                        audio_format=request.audio_format
+                    )
+                    
+                    with yt_dlp.YoutubeDL(audio_opts) as ydl:
+                        ydl.download([request.url])
+                    
+                    audio_files = list(TEMP_DIR.glob(f"audio_{base_filename}.*"))
+                    if audio_files:
+                        audio_file = audio_files[0].name
+                        tasks[task_id]["audio_file"] = audio_file
+            else:
+                # 非B站，使用标准配置
+                audio_opts = config_func(
+                    audio_path, 
+                    extract_audio=True, 
+                    audio_format=request.audio_format
+                )
+                
+                with yt_dlp.YoutubeDL(audio_opts) as ydl:
+                    ydl.download([request.url])
+                
+                # 查找生成的音频文件
+                audio_files = list(TEMP_DIR.glob(f"audio_{base_filename}.*"))
+                if audio_files:
+                    audio_file = audio_files[0].name
+                    tasks[task_id]["audio_file"] = audio_file
         
         # 处理视频
         video_file = None
