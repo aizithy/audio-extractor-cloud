@@ -1,0 +1,16 @@
+# 增强版视频音频提取API - 依赖包
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+yt-dlp>=2024.1.1
+pydantic==2.10.3
+python-multipart==0.0.12
+aiofiles==24.1.0
+requests==2.32.5
+
+# 可选的Whisper支持（如需语音识别）
+# openai-whisper
+
+# 确保系统已安装FFmpeg
+# Ubuntu/Debian: sudo apt install ffmpeg
+# macOS: brew install ffmpeg
+# Windows: 从 https://ffmpeg.org 下载并添加到PATH
