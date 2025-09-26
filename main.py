@@ -194,7 +194,7 @@ def get_bilibili_enhanced_opts(output_path: str, extract_audio: bool = True,
     audio_quality_map = {"best": "0", "good": "128", "normal": "96"}
     
     opts = {
-        'format': 'bestaudio[ext=m4a]/bestaudio/best' if extract_audio else 'best[height<=720]/best',
+        'format': 'bestaudio/best' if extract_audio else 'best[height<=720]/best',
         'outtmpl': output_path,
         'quiet': False,
         'no_warnings': False,
