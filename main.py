@@ -1,0 +1,229 @@
+import os
+import sys
+import asyncio
+import hashlib
+import time
+from pathlib import Path
+from typing import Dict, Any, Optional
+from datetime import datetime
+
+from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+import yt_dlp
+
+PORT = int(os.environ.get("PORT", 8000))
+TEMP_DIR = Path(os.environ.get("VT_TEMP_DIR", "/tmp/video_transcriber"))
+TEMP_DIR.mkdir(parents=True, exist_ok=True)
+
+app = FastAPI(
+    title="Video Audio Extractor (Local)",
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+class ProcessRequest(BaseModel):
+    url: str = Field(..., description="Video URL (YouTube/Bilibili)")
+    extract_audio: bool = Field(True)
+    keep_video: bool = Field(False)
+    audio_format: str = Field("m4a", description="mp3|m4a|wav")
+    audio_quality: str = Field("good", description="best|good|normal")
+
+class ProcessResponse(BaseModel):
+    task_id: str
+    message: str
+
+class TaskStatusResponse(BaseModel):
+    status: str
+    progress: int
+    message: str
+    video_title: Optional[str] = None
+    audio_file: Optional[str] = None
+    duration: Optional[int] = None
+    error_detail: Optional[str] = None
+
+# in-memory task store
+TASKS: Dict[str, Dict[str, Any]] = {}
+
+AUDIO_QUALITY_MAP = {
+    "best": "0",
+    "good": "128",
+    "normal": "96",
+}
+
+
+def _ydl_opts(output_tmpl: str, audio_format: str, quality: str) -> Dict[str, Any]:
+    base = {
+        'outtmpl': output_tmpl,
+        'quiet': False,
+        'no_warnings': False,
+        'retries': 3,
+        'socket_timeout': 30,
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        }
+    }
+    base.update({
+        'format': 'bestaudio/best',
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': audio_format,
+            'preferredquality': AUDIO_QUALITY_MAP.get(quality, '128'),
+        }]
+    })
+    return base
+
+
+def _extract_audio_blocking(url: str, audio_format: str, quality: str) -> Dict[str, Any]:
+    """阻塞式提取，适合放入线程池执行。"""
+    url_hash = hashlib.md5(url.encode()).hexdigest()[:8]
+    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+    basename = f"audio_{url_hash}_{ts}"
+    outtmpl = str(TEMP_DIR / basename)
+
+    opts = _ydl_opts(outtmpl, audio_format, quality)
+
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+        if not info:
+            raise HTTPException(status_code=404, detail="Cannot fetch video info")
+        title = (info.get('title') or 'Unknown')
+        duration = info.get('duration', 0)
+        ydl.download([url])
+
+    files = list(TEMP_DIR.glob(f"{basename}.*"))
+    if not files:
+        raise HTTPException(status_code=500, detail="Audio file not generated")
+    f = files[0]
+
+    return {
+        'filename': f.name,
+        'file_path': str(f),
+        'title': title,
+        'duration': duration,
+    }
+
+
+def _cleanup_old_files(max_age_hours: int = 6) -> None:
+    now = time.time()
+    for p in TEMP_DIR.glob('*'):
+        try:
+            if p.is_file() and now - p.stat().st_mtime > max_age_hours * 3600:
+                p.unlink()
+        except Exception:
+            pass
+
+
+@app.get("/")
+async def root():
+    return {"service": "Video Audio Extractor (Local)", "version": "1.0.0"}
+
+
+@app.get("/api/health")
+async def health(background_tasks: BackgroundTasks):
+    background_tasks.add_task(_cleanup_old_files)
+    return {"status": "healthy", "temp_dir": str(TEMP_DIR)}
+
+
+@app.post("/api/process", response_model=ProcessResponse)
+async def create_task(req: ProcessRequest, background_tasks: BackgroundTasks):
+    if not req.url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="Invalid URL")
+
+    import uuid
+    task_id = str(uuid.uuid4())
+    TASKS[task_id] = {
+        'status': 'pending',
+        'progress': 0,
+        'message': 'queued',
+        'created_at': time.time(),
+    }
+
+    async def run():
+        try:
+            TASKS[task_id].update(status='processing', progress=10, message='fetching video info')
+            # 在线程池中执行阻塞下载
+            result = await asyncio.to_thread(_extract_audio_blocking, req.url, req.audio_format, req.audio_quality)
+            TASKS[task_id].update({
+                'status': 'completed',
+                'progress': 100,
+                'message': 'done',
+                'audio_file': result['filename'],
+                'video_title': result['title'],
+                'duration': result['duration'],
+            })
+        except Exception as e:
+            TASKS[task_id].update(status='failed', progress=0, message='failed', error_detail=str(e)[:200])
+
+    # 在当前事件循环中调度任务，避免在后台线程中创建协程导致的无事件循环错误
+    asyncio.create_task(run())
+    return ProcessResponse(task_id=task_id, message="accepted")
+
+
+@app.get("/api/status/{task_id}")
+async def status(task_id: str):
+    try:
+        if task_id not in TASKS:
+            return JSONResponse({
+                "status": "failed",
+                "progress": 0,
+                "message": "task not found",
+                "error_detail": "not_found"
+            }, status_code=200)
+        t = TASKS[task_id]
+        return {
+            "status": str(t.get('status', 'pending')),
+            "progress": int(t.get('progress', 0) or 0),
+            "message": str(t.get('message', '')),
+            "video_title": t.get('video_title'),
+            "audio_file": t.get('audio_file'),
+            "duration": int(t.get('duration', 0) or 0) if t.get('duration') is not None else None,
+            "error_detail": t.get('error_detail'),
+        }
+    except Exception as e:
+        # 永远返回200+JSON，避免前端解析失败导致一直卡住
+        return JSONResponse({
+            "status": "failed",
+            "progress": 0,
+            "message": "internal error",
+            "error_detail": str(e)[:200]
+        }, status_code=200)
+
+
+@app.get("/api/download/{filename}")
+async def download(filename: str):
+    p = TEMP_DIR / filename
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="file not found")
+    media_type = 'audio/mpeg' if p.suffix.lower() == '.mp3' else 'audio/mp4'
+    return FileResponse(str(p), media_type=media_type, filename=p.name)
+
+
+# Simple sync endpoint for compatibility with existing iOS code
+class ExtractRequest(BaseModel):
+    url: str
+    format: str = 'm4a'
+    mode: str = 'stream'
+    quality: str = 'good'
+
+@app.post("/extract")
+async def simple_extract(req: ExtractRequest):
+    result = await asyncio.to_thread(_extract_audio_blocking, req.url, req.format, req.quality)
+    media_type = 'audio/mpeg' if req.format == 'mp3' else 'audio/mp4'
+    return FileResponse(result['file_path'], media_type=media_type, filename=result['filename'])
+
+
+if __name__ == "__main__":
+    import uvicorn
+    _cleanup_old_files()
+    uvicorn.run("main:app", host="0.0.0.0", port=PORT)
