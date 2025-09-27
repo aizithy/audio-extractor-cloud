@@ -12,6 +12,7 @@ import time
 import json
 import uuid
 from pathlib import Path
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from typing import Optional, Dict, List, Any
 from datetime import datetime, timedelta
 from enum import Enum
@@ -187,6 +188,21 @@ def get_enhanced_ydl_opts(output_path: str, extract_audio: bool = True,
     
     return base_opts
 
+def _normalize_bilibili_url(raw_url: str) -> str:
+    """规范化B站链接，仅保留 BV 路径和可选 p 参数，移除分享参数。"""
+    try:
+        u = urlparse(raw_url)
+        if 'bilibili.com' not in (u.netloc or ''):
+            return raw_url
+        qs = parse_qs(u.query)
+        keep = {}
+        if 'p' in qs and qs['p']:
+            keep['p'] = qs['p'][0]
+        new_query = urlencode(keep)
+        return urlunparse((u.scheme or 'https', u.netloc, u.path.rstrip('/'), '', new_query, ''))
+    except Exception:
+        return raw_url
+
 def get_bilibili_enhanced_opts(output_path: str, extract_audio: bool = True, 
                               audio_format: str = "mp3") -> Dict:
     """B站专用增强配置 - 支持多种音频格式"""
@@ -209,6 +225,8 @@ def get_bilibili_enhanced_opts(output_path: str, extract_audio: bool = True,
         'no_warnings': False,
         'retries': 3,
         'socket_timeout': 30,
+        'noplaylist': True,
+        'playlist_items': '1',
         'extract_flat': False,
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
@@ -274,9 +292,12 @@ async def process_video_task(task_id: str, request: ProcessRequest):
         }
         
         config_func = None
+        effective_url = request.url
         for domain, func in platform_configs.items():
             if domain in request.url.lower():
                 config_func = func
+                if domain == 'bilibili.com':
+                    effective_url = _normalize_bilibili_url(request.url)
                 break
         
         if not config_func:
@@ -293,7 +314,7 @@ async def process_video_task(task_id: str, request: ProcessRequest):
         info_opts.update({'quiet': True, 'no_warnings': True})
         
         with yt_dlp.YoutubeDL(info_opts) as ydl:
-            info = ydl.extract_info(request.url, download=False)
+            info = ydl.extract_info(effective_url, download=False)
             
             if not info:
                 raise Exception("无法获取视频信息")
@@ -317,7 +338,7 @@ async def process_video_task(task_id: str, request: ProcessRequest):
             })
             
             # B站智能处理逻辑
-            if 'bilibili.com' in request.url.lower():
+            if 'bilibili.com' in effective_url.lower():
                 try:
                     # 先获取可用格式
                     info_opts_bilibili = {
@@ -333,7 +354,7 @@ async def process_video_task(task_id: str, request: ProcessRequest):
                         }
                     }
                     with yt_dlp.YoutubeDL(info_opts_bilibili) as ydl:
-                        info = ydl.extract_info(request.url, download=False)
+                        info = ydl.extract_info(effective_url, download=False)
                         formats = info.get('formats', [])
                         
                         # 找到音频格式
@@ -354,6 +375,8 @@ async def process_video_task(task_id: str, request: ProcessRequest):
                                 'quiet': False,
                                 'retries': 3,
                                 'socket_timeout': 30,
+                                'noplaylist': True,
+                                'playlist_items': '1',
                                 'http_headers': {
                                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
                                     'Referer': 'https://www.bilibili.com/',
@@ -367,7 +390,7 @@ async def process_video_task(task_id: str, request: ProcessRequest):
                             }
                             
                             with yt_dlp.YoutubeDL(smart_opts) as ydl:
-                                ydl.download([request.url])
+                                ydl.download([effective_url])
                             
                             # 查找生成的音频文件
                             audio_files = list(TEMP_DIR.glob(f"audio_{base_filename}.*"))
@@ -390,7 +413,7 @@ async def process_video_task(task_id: str, request: ProcessRequest):
                     )
                     
                     with yt_dlp.YoutubeDL(audio_opts) as ydl:
-                        ydl.download([request.url])
+                        ydl.download([effective_url])
                     
                     audio_files = list(TEMP_DIR.glob(f"audio_{base_filename}.*"))
                     if audio_files:
@@ -405,7 +428,7 @@ async def process_video_task(task_id: str, request: ProcessRequest):
                 )
                 
                 with yt_dlp.YoutubeDL(audio_opts) as ydl:
-                    ydl.download([request.url])
+                    ydl.download([effective_url])
                 
                 # 查找生成的音频文件
                 audio_files = list(TEMP_DIR.glob(f"audio_{base_filename}.*"))
