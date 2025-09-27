@@ -90,7 +90,14 @@ def _ydl_opts(output_tmpl: str, audio_format: str, quality: str) -> Dict[str, An
     # Cookies 优先级：YT_COOKIES_FILE > YT_COOKIES_URL > YT_COOKIES_B64
     yt_cookies_file = os.environ.get('YT_COOKIES_FILE')
     if yt_cookies_file and os.path.exists(yt_cookies_file):
-        base['cookiefile'] = yt_cookies_file
+        # Render 的 /etc/secrets 只读；复制到可写临时目录再使用
+        try:
+            tmp_cookie = TEMP_DIR / 'yt_cookies.txt'
+            tmp_cookie.write_bytes(Path(yt_cookies_file).read_bytes())
+            base['cookiefile'] = str(tmp_cookie)
+        except Exception as e:
+            print(f"[cookies] copy failed: {e}", file=sys.stderr)
+            base['cookiefile'] = yt_cookies_file
     else:
         yt_cookies_url = os.environ.get('YT_COOKIES_URL')
         if yt_cookies_url:
@@ -133,21 +140,26 @@ def _extract_audio_blocking(url: str, audio_format: str, quality: str) -> Dict[s
 
     opts = _ydl_opts(outtmpl, audio_format, quality)
 
-    # 云端 YouTube 适配（地区/反爬）
+    # 云端 YouTube 适配（地区/反爬 + cookies 客户端选择）
     if _is_youtube_url(url):
-        yt_clients = os.environ.get('YT_CLIENTS', 'android,web').split(',')
         geo_country = os.environ.get('GEO_BYPASS_COUNTRY', 'US')
+        cookies_in_use = bool(opts.get('cookiefile'))
+        if cookies_in_use:
+            yt_clients = os.environ.get('YT_CLIENTS', 'web_safari,web').split(',')
+            ua = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 13_4) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Safari/605.1.15'
+        else:
+            yt_clients = os.environ.get('YT_CLIENTS', 'android,web').split(',')
+            ua = 'com.google.android.youtube/17.36.4 (Linux; U; Android 11) gzip'
         opts.update({
             'geo_bypass': True,
             'geo_bypass_country': geo_country,
             'extractor_args': {
                 'youtube': {
                     'player_client': yt_clients,
-                    'skip': ['dash', 'hls'],
                 }
             },
             'http_headers': {
-                'User-Agent': 'com.google.android.youtube/17.36.4 (Linux; U; Android 11) gzip',
+                'User-Agent': ua,
                 'Accept-Language': 'en-US,en;q=0.9'
             }
         })
@@ -164,7 +176,11 @@ def _extract_audio_blocking(url: str, audio_format: str, quality: str) -> Dict[s
             if _is_youtube_url(url):
                 # 尝试备用客户端组合
                 fallback = opts.copy()
-                fallback.setdefault('extractor_args', {}).setdefault('youtube', {})['player_client'] = ['ios', 'android_creator']
+                cookies_in_use = bool(opts.get('cookiefile'))
+                if cookies_in_use:
+                    fallback.setdefault('extractor_args', {}).setdefault('youtube', {})['player_client'] = ['web_safari', 'web']
+                else:
+                    fallback.setdefault('extractor_args', {}).setdefault('youtube', {})['player_client'] = ['ios', 'android_creator']
                 with yt_dlp.YoutubeDL(fallback) as y2:
                     y2.download([url])
             else:
