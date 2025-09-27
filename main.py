@@ -145,7 +145,8 @@ def _extract_audio_blocking(url: str, audio_format: str, quality: str) -> Dict[s
         geo_country = os.environ.get('GEO_BYPASS_COUNTRY', 'US')
         cookies_in_use = bool(opts.get('cookiefile'))
         if cookies_in_use:
-            yt_clients = os.environ.get('YT_CLIENTS', 'web_safari,web').split(',')
+            # 强制 cookies 模式走 web_safari/web，避免 android 客户端与 cookies 不兼容
+            yt_clients = ['web_safari', 'web']
             ua = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 13_4) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Safari/605.1.15'
         else:
             yt_clients = os.environ.get('YT_CLIENTS', 'android,web').split(',')
@@ -218,6 +219,31 @@ async def root():
 async def health(background_tasks: BackgroundTasks):
     background_tasks.add_task(_cleanup_old_files)
     return {"status": "healthy", "temp_dir": str(TEMP_DIR)}
+
+
+@app.get("/api/diag")
+async def diag():
+    # 返回 cookies/代理/客户端策略的关键诊断信息
+    cookies_file = None
+    try:
+        # 推断当前是否存在解码后的 cookies 文件
+        for name in ["yt_cookies.txt"]:
+            p = TEMP_DIR / name
+            if p.exists() and p.stat().st_size > 0:
+                cookies_file = str(p)
+                break
+    except Exception:
+        pass
+
+    return {
+        "cookiefile_exist": bool(cookies_file),
+        "cookiefile_path": cookies_file,
+        "YDL_PROXY": os.environ.get("YDL_PROXY"),
+        "YT_COOKIES_FILE": os.environ.get("YT_COOKIES_FILE"),
+        "YT_COOKIES_URL": bool(os.environ.get("YT_COOKIES_URL")),
+        "YT_COOKIES_B64": bool(os.environ.get("YT_COOKIES_B64")),
+        "GEO_BYPASS_COUNTRY": os.environ.get("GEO_BYPASS_COUNTRY", "US"),
+    }
 
 
 @app.post("/api/process", response_model=ProcessResponse)
