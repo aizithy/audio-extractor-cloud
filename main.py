@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import Dict, Any, Optional
 from datetime import datetime
 
@@ -81,7 +82,19 @@ def _ydl_opts(output_tmpl: str, audio_format: str, quality: str) -> Dict[str, An
             'preferredquality': AUDIO_QUALITY_MAP.get(quality, '128'),
         }]
     })
+    # 允许通过环境变量声明代理（也支持平台级 HTTP(S)_PROXY）
+    ydl_proxy = os.environ.get('YDL_PROXY')
+    if ydl_proxy:
+        base['proxy'] = ydl_proxy
     return base
+
+
+def _is_youtube_url(url: str) -> bool:
+    try:
+        host = (urlparse(url).netloc or '').lower()
+        return 'youtube.com' in host or 'youtu.be' in host
+    except Exception:
+        return False
 
 
 def _extract_audio_blocking(url: str, audio_format: str, quality: str) -> Dict[str, Any]:
@@ -93,13 +106,42 @@ def _extract_audio_blocking(url: str, audio_format: str, quality: str) -> Dict[s
 
     opts = _ydl_opts(outtmpl, audio_format, quality)
 
+    # 云端 YouTube 适配（地区/反爬）
+    if _is_youtube_url(url):
+        yt_clients = os.environ.get('YT_CLIENTS', 'android,web').split(',')
+        geo_country = os.environ.get('GEO_BYPASS_COUNTRY', 'US')
+        opts.update({
+            'geo_bypass': True,
+            'geo_bypass_country': geo_country,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': yt_clients,
+                    'skip': ['dash', 'hls'],
+                }
+            },
+            'http_headers': {
+                'User-Agent': 'com.google.android.youtube/17.36.4 (Linux; U; Android 11) gzip',
+                'Accept-Language': 'en-US,en;q=0.9'
+            }
+        })
+
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=False)
         if not info:
             raise HTTPException(status_code=404, detail="Cannot fetch video info")
         title = (info.get('title') or 'Unknown')
         duration = info.get('duration', 0)
-        ydl.download([url])
+        try:
+            ydl.download([url])
+        except Exception as e:
+            if _is_youtube_url(url):
+                # 尝试备用客户端组合
+                fallback = opts.copy()
+                fallback.setdefault('extractor_args', {}).setdefault('youtube', {})['player_client'] = ['ios', 'android_creator']
+                with yt_dlp.YoutubeDL(fallback) as y2:
+                    y2.download([url])
+            else:
+                raise
 
     files = list(TEMP_DIR.glob(f"{basename}.*"))
     if not files:
