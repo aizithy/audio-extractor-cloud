@@ -320,7 +320,18 @@ async def process_video_task(task_id: str, request: ProcessRequest):
             if 'bilibili.com' in request.url.lower():
                 try:
                     # 先获取可用格式
-                    info_opts_bilibili = {'quiet': True, 'no_warnings': True}
+                    info_opts_bilibili = {
+                        'quiet': True,
+                        'no_warnings': True,
+                        'extract_flat': False,
+                        'retries': 3,
+                        'socket_timeout': 30,
+                        'http_headers': {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+                            'Referer': 'https://www.bilibili.com/',
+                            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        }
+                    }
                     with yt_dlp.YoutubeDL(info_opts_bilibili) as ydl:
                         info = ydl.extract_info(request.url, download=False)
                         formats = info.get('formats', [])
@@ -338,9 +349,16 @@ async def process_video_task(task_id: str, request: ProcessRequest):
                             
                             # 使用选定的格式进行下载
                             smart_opts = {
-                                'format': format_id,
+                                'format': f"{format_id}/bestaudio/best",
                                 'outtmpl': audio_path,
                                 'quiet': False,
+                                'retries': 3,
+                                'socket_timeout': 30,
+                                'http_headers': {
+                                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+                                    'Referer': 'https://www.bilibili.com/',
+                                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                                },
                                 'postprocessors': [{
                                     'key': 'FFmpegExtractAudio',
                                     'preferredcodec': request.audio_format,
