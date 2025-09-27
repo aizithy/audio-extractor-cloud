@@ -86,16 +86,33 @@ def _ydl_opts(output_tmpl: str, audio_format: str, quality: str) -> Dict[str, An
     ydl_proxy = os.environ.get('YDL_PROXY')
     if ydl_proxy:
         base['proxy'] = ydl_proxy
-    # 可选：通过环境变量注入 YouTube cookies（Netscape 格式，Base64 编码）
-    yt_cookies_b64 = os.environ.get('YT_COOKIES_B64')
-    if yt_cookies_b64:
-        try:
-            import base64
-            cookies_path = TEMP_DIR / 'yt_cookies.txt'
-            cookies_path.write_bytes(base64.b64decode(yt_cookies_b64))
-            base['cookiefile'] = str(cookies_path)
-        except Exception as e:
-            print(f"[cookies] load failed: {e}", file=sys.stderr)
+
+    # Cookies 优先级：YT_COOKIES_FILE > YT_COOKIES_URL > YT_COOKIES_B64
+    yt_cookies_file = os.environ.get('YT_COOKIES_FILE')
+    if yt_cookies_file and os.path.exists(yt_cookies_file):
+        base['cookiefile'] = yt_cookies_file
+    else:
+        yt_cookies_url = os.environ.get('YT_COOKIES_URL')
+        if yt_cookies_url:
+            try:
+                import requests
+                r = requests.get(yt_cookies_url, timeout=15)
+                r.raise_for_status()
+                cookies_path = TEMP_DIR / 'yt_cookies.txt'
+                cookies_path.write_bytes(r.content)
+                base['cookiefile'] = str(cookies_path)
+            except Exception as e:
+                print(f"[cookies] fetch failed: {e}", file=sys.stderr)
+        else:
+            yt_cookies_b64 = os.environ.get('YT_COOKIES_B64')
+            if yt_cookies_b64:
+                try:
+                    import base64
+                    cookies_path = TEMP_DIR / 'yt_cookies.txt'
+                    cookies_path.write_bytes(base64.b64decode(yt_cookies_b64))
+                    base['cookiefile'] = str(cookies_path)
+                except Exception as e:
+                    print(f"[cookies] load failed: {e}", file=sys.stderr)
     return base
 
 

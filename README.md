@@ -40,9 +40,12 @@ macOS 可用：
 ```bash
 base64 -i cookies.txt | tr -d '\n' > cookies.b64
 ```
-3) 打开 Render → Environment → 添加变量：
-   - `YT_COOKIES_B64` = 复制 `cookies.b64` 内容
-   - 可选：`YT_CLIENTS=android,web`，`GEO_BYPASS_COUNTRY=US`，`YDL_PROXY=socks5h://user:pass@host:port`
-4) 重新部署，日志中应看到 `cookiefile` 被启用（若失败会打印 `[cookies] load failed`）。
+3) Render 上避免“argument list too long”（环境变量过长）
+   - 推荐其一：
+     - Secret File：在 Render 新建 Secret File（如 `/opt/render/yt_cookies.txt`），内容为原始 `cookies.txt`，然后添加环境变量 `YT_COOKIES_FILE=/opt/render/yt_cookies.txt`
+     - 远程 URL：将 `cookies.txt` 放到你可访问的直链地址（可带临时 token），设置 `YT_COOKIES_URL=https://.../cookies.txt`
+   - 如仍使用 `YT_COOKIES_B64`，注意过长可能导致构建报错。
+4) 其他可选变量：`YT_CLIENTS=android,web`，`GEO_BYPASS_COUNTRY=US`，`YDL_PROXY=socks5h://user:pass@host:port`
+5) 重新部署后，若 cookies 生效，可在日志里看到已启用 cookiefile（失败会打印 `[cookies] fetch/load failed`）。
 
 说明：我们不会保存 cookies 到仓库，仅运行时解码为 `/tmp/video_transcriber/yt_cookies.txt` 并传给 `yt-dlp`。
