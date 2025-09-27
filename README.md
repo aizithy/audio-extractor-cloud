@@ -27,3 +27,22 @@ docker run -p 8000:8000 audio-extractor-cloud
 - 环境变量：`PORT`（平台自动注入），`VT_TEMP_DIR=/tmp/video_transcriber`
 - 入口：`uvicorn main:app --host 0.0.0.0 --port $PORT`
 - 需要镜像包含 `ffmpeg`（Dockerfile 已内置）
+
+## Render 部署与 YouTube Cookies（解决需要登录/验证/风控）
+部分 YouTube 链接在云端会提示“需要登录/验证码/像机器人”，可在 Render 设置环境变量 `YT_COOKIES_B64` 注入你的浏览器 cookies（Netscape 格式，Base64 编码）：
+
+1) 从本机浏览器导出 cookies（Netscape 格式）。可用 `yt-dlp --cookies-from-browser chrome` 导出为 `cookies.txt`，或按项目 Wiki 导出。
+2) 将 `cookies.txt` Base64 编码：
+```bash
+base64 -w0 cookies.txt > cookies.b64
+```
+macOS 可用：
+```bash
+base64 -i cookies.txt | tr -d '\n' > cookies.b64
+```
+3) 打开 Render → Environment → 添加变量：
+   - `YT_COOKIES_B64` = 复制 `cookies.b64` 内容
+   - 可选：`YT_CLIENTS=android,web`，`GEO_BYPASS_COUNTRY=US`，`YDL_PROXY=socks5h://user:pass@host:port`
+4) 重新部署，日志中应看到 `cookiefile` 被启用（若失败会打印 `[cookies] load failed`）。
+
+说明：我们不会保存 cookies 到仓库，仅运行时解码为 `/tmp/video_transcriber/yt_cookies.txt` 并传给 `yt-dlp`。
