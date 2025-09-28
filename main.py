@@ -63,7 +63,7 @@ AUDIO_QUALITY_MAP = {
 }
 
 
-def _ydl_opts(output_tmpl: str, audio_format: str, quality: str) -> Dict[str, Any]:
+def _ydl_opts(output_tmpl: str, audio_format: str, quality: str, url: str = "") -> Dict[str, Any]:
     base = {
         'outtmpl': output_tmpl,
         'quiet': False,
@@ -120,6 +120,43 @@ def _ydl_opts(output_tmpl: str, audio_format: str, quality: str) -> Dict[str, An
                     base['cookiefile'] = str(cookies_path)
                 except Exception as e:
                     print(f"[cookies] load failed: {e}", file=sys.stderr)
+
+    # Handle Douyin cookies if it's a Douyin URL
+    if _is_douyin_url(url):
+        # Cookies 优先级：DY_COOKIES_FILE > DY_COOKIES_URL > DY_COOKIES_B64
+        dy_cookies_file = os.environ.get('DY_COOKIES_FILE')
+        if dy_cookies_file and os.path.exists(dy_cookies_file):
+            # Render 的 /etc/secrets 只读；复制到可写临时目录再使用
+            try:
+                tmp_cookie = TEMP_DIR / 'dy_cookies.txt'
+                tmp_cookie.write_bytes(Path(dy_cookies_file).read_bytes())
+                base['cookiefile'] = str(tmp_cookie)
+            except Exception as e:
+                print(f"[douyin cookies] copy failed: {e}", file=sys.stderr)
+                base['cookiefile'] = dy_cookies_file
+        else:
+            dy_cookies_url = os.environ.get('DY_COOKIES_URL')
+            if dy_cookies_url:
+                try:
+                    import requests
+                    r = requests.get(dy_cookies_url, timeout=15)
+                    r.raise_for_status()
+                    cookies_path = TEMP_DIR / 'dy_cookies.txt'
+                    cookies_path.write_bytes(r.content)
+                    base['cookiefile'] = str(cookies_path)
+                except Exception as e:
+                    print(f"[douyin cookies] fetch failed: {e}", file=sys.stderr)
+            else:
+                dy_cookies_b64 = os.environ.get('DY_COOKIES_B64')
+                if dy_cookies_b64:
+                    try:
+                        import base64
+                        cookies_path = TEMP_DIR / 'dy_cookies.txt'
+                        cookies_path.write_bytes(base64.b64decode(dy_cookies_b64))
+                        base['cookiefile'] = str(cookies_path)
+                    except Exception as e:
+                        print(f"[douyin cookies] load failed: {e}", file=sys.stderr)
+
     return base
 
 
@@ -131,6 +168,14 @@ def _is_youtube_url(url: str) -> bool:
         return False
 
 
+def _is_douyin_url(url: str) -> bool:
+    try:
+        host = (urlparse(url).netloc or '').lower()
+        return 'douyin.com' in host or 'iesdouyin.com' in host
+    except Exception:
+        return False
+
+
 def _extract_audio_blocking(url: str, audio_format: str, quality: str) -> Dict[str, Any]:
     """阻塞式提取，适合放入线程池执行。"""
     url_hash = hashlib.md5(url.encode()).hexdigest()[:8]
@@ -138,7 +183,7 @@ def _extract_audio_blocking(url: str, audio_format: str, quality: str) -> Dict[s
     basename = f"audio_{url_hash}_{ts}"
     outtmpl = str(TEMP_DIR / basename)
 
-    opts = _ydl_opts(outtmpl, audio_format, quality)
+    opts = _ydl_opts(outtmpl, audio_format, quality, url)
 
     # 云端 YouTube 适配（地区/反爬 + cookies 客户端选择）
     if _is_youtube_url(url):
@@ -162,6 +207,23 @@ def _extract_audio_blocking(url: str, audio_format: str, quality: str) -> Dict[s
             'http_headers': {
                 'User-Agent': ua,
                 'Accept-Language': 'en-US,en;q=0.9'
+            }
+        })
+
+    # Douyin specific handling
+    if _is_douyin_url(url):
+        douyin_cookies_in_use = bool(opts.get('cookiefile'))
+        if douyin_cookies_in_use:
+            # Use desktop user agent when cookies are available
+            ua = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 13_4) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Safari/605.1.15'
+        else:
+            ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
+
+        opts.update({
+            'http_headers': {
+                'User-Agent': ua,
+                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                'Referer': 'https://www.douyin.com/',
             }
         })
 
@@ -225,12 +287,16 @@ async def health(background_tasks: BackgroundTasks):
 async def diag():
     # 返回 cookies/代理/客户端策略的关键诊断信息
     cookies_file = None
+    douyin_cookies_file = None
     try:
         # 推断当前是否存在解码后的 cookies 文件
-        for name in ["yt_cookies.txt"]:
+        for name in ["yt_cookies.txt", "dy_cookies.txt"]:
             p = TEMP_DIR / name
             if p.exists() and p.stat().st_size > 0:
-                cookies_file = str(p)
+                if name == "yt_cookies.txt":
+                    cookies_file = str(p)
+                elif name == "dy_cookies.txt":
+                    douyin_cookies_file = str(p)
                 break
     except Exception:
         pass
@@ -238,10 +304,15 @@ async def diag():
     return {
         "cookiefile_exist": bool(cookies_file),
         "cookiefile_path": cookies_file,
+        "douyin_cookiefile_exist": bool(douyin_cookies_file),
+        "douyin_cookiefile_path": douyin_cookies_file,
         "YDL_PROXY": os.environ.get("YDL_PROXY"),
         "YT_COOKIES_FILE": os.environ.get("YT_COOKIES_FILE"),
         "YT_COOKIES_URL": bool(os.environ.get("YT_COOKIES_URL")),
         "YT_COOKIES_B64": bool(os.environ.get("YT_COOKIES_B64")),
+        "DY_COOKIES_FILE": os.environ.get("DY_COOKIES_FILE"),
+        "DY_COOKIES_URL": bool(os.environ.get("DY_COOKIES_URL")),
+        "DY_COOKIES_B64": bool(os.environ.get("DY_COOKIES_B64")),
         "GEO_BYPASS_COUNTRY": os.environ.get("GEO_BYPASS_COUNTRY", "US"),
     }
 
@@ -332,6 +403,9 @@ async def simple_extract(req: ExtractRequest):
     result = await asyncio.to_thread(_extract_audio_blocking, req.url, req.format, req.quality)
     media_type = 'audio/mpeg' if req.format == 'mp3' else 'audio/mp4'
     return FileResponse(result['file_path'], media_type=media_type, filename=result['filename'])
+
+
+ 
 
 
 if __name__ == "__main__":

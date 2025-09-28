@@ -49,3 +49,18 @@ base64 -i cookies.txt | tr -d '\n' > cookies.b64
 5) 重新部署后，若 cookies 生效，可在日志里看到已启用 cookiefile（失败会打印 `[cookies] fetch/load failed`）。
 
 说明：我们不会保存 cookies 到仓库，仅运行时解码为 `/tmp/video_transcriber/yt_cookies.txt` 并传给 `yt-dlp`。
+
+## Render 部署与 Douyin Cookies（解决需要登录/验证/风控）
+部分抖音链接在云端会提示"需要登录/验证/风控"，可在 Render 设置环境变量注入你的浏览器 cookies：
+
+1) 从本机浏览器导出 cookies（Netscape 格式）。可用浏览器扩展如 "Get cookies.txt" 导出为 `cookies.txt`。
+
+2) Render 上避免"argument list too long"（环境变量过长）
+   - 推荐其一：
+     - Secret File：在 Render 新建 Secret File（如 `/opt/render/dy_cookies.txt`），内容为原始 `cookies.txt`，然后添加环境变量 `DY_COOKIES_FILE=/opt/render/dy_cookies.txt`
+     - 远程 URL：将 `cookies.txt` 放到你可访问的直链地址（可带临时 token），设置 `DY_COOKIES_URL=https://.../cookies.txt`
+     - Base64 编码：将 `cookies.txt` Base64 编码后设置 `DY_COOKIES_B64=<base64_content>`
+
+3) 重新部署后，若 cookies 生效，可在日志里看到已启用 cookiefile（失败会打印 `[douyin cookies] fetch/load failed`）。
+
+说明：我们不会保存 cookies 到仓库，仅运行时解码为 `/tmp/video_transcriber/dy_cookies.txt` 并传给 `yt-dlp`。
