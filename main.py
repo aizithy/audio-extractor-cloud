@@ -415,8 +415,13 @@ async def search_music(keyword: str, limit: int = 30):
     try:
         import aiohttp
         
-        # 使用公开的网易云音乐API镜像
-        api_base = "https://netease-cloud-music-api-zeta-sepia.vercel.app"
+        # 使用公开的网易云音乐API镜像（优先使用可用的镜像）
+        api_mirrors = [
+            "https://netease-cloud-music-api.vercel.app",
+            "https://music-api.heheda.top",
+            "https://api.injahow.cn"
+        ]
+        api_base = api_mirrors[0]  # 使用第一个镜像
         
         async with aiohttp.ClientSession() as session:
             async with session.get(
@@ -459,7 +464,7 @@ async def get_music_url(id: int):
     try:
         import aiohttp
         
-        api_base = "https://netease-cloud-music-api-zeta-sepia.vercel.app"
+        api_base = "https://netease-cloud-music-api.vercel.app"
         
         async with aiohttp.ClientSession() as session:
             async with session.get(
@@ -491,7 +496,7 @@ async def get_music_lyric(id: int):
     try:
         import aiohttp
         
-        api_base = "https://netease-cloud-music-api-zeta-sepia.vercel.app"
+        api_base = "https://netease-cloud-music-api.vercel.app"
         
         async with aiohttp.ClientSession() as session:
             async with session.get(
