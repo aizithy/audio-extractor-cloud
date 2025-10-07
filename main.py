@@ -459,31 +459,45 @@ async def search_music(keyword: str, limit: int = 30):
 @app.get("/api/music/url")
 async def get_music_url(id: int):
     """
-    获取音乐播放URL
+    获取音乐播放URL - 支持多个音质尝试
     """
     try:
         import aiohttp
         
         api_base = "https://netease-cloud-music-api.vercel.app"
         
+        # 尝试多个音质级别
+        bitrates = [320000, 192000, 128000]
+        
         async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"{api_base}/song/url",
-                params={
-                    "id": id,
-                    "br": 320000  # 320kbps
-                }
-            ) as resp:
-                if resp.status != 200:
-                    raise HTTPException(status_code=resp.status, detail="获取播放URL失败")
-                
-                data = await resp.json()
-                
-                if data.get('data') and len(data['data']) > 0:
-                    url = data['data'][0].get('url')
-                    return {'url': url}
-                else:
-                    raise HTTPException(status_code=404, detail="未找到播放URL")
+            for br in bitrates:
+                try:
+                    async with session.get(
+                        f"{api_base}/song/url",
+                        params={
+                            "id": id,
+                            "br": br
+                        },
+                        timeout=aiohttp.ClientTimeout(total=10)
+                    ) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            
+                            if data.get('data') and len(data['data']) > 0:
+                                url = data['data'][0].get('url')
+                                if url and url != "null":
+                                    print(f"✅ 获取到 {br//1000}kbps URL")
+                                    return {'url': url, 'bitrate': br}
+                except Exception as e:
+                    print(f"⚠️ {br//1000}kbps 尝试失败: {str(e)}")
+                    continue
+            
+            # 所有音质都失败
+            return {
+                'url': None, 
+                'error': '该歌曲暂时无法播放（可能需要VIP或有版权限制）',
+                'suggestion': '建议下载到本地播放'
+            }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取URL失败: {str(e)}")
 
