@@ -405,7 +405,112 @@ async def simple_extract(req: ExtractRequest):
     return FileResponse(result['file_path'], media_type=media_type, filename=result['filename'])
 
 
- 
+# ===== 音乐搜索相关API =====
+
+@app.get("/api/music/search")
+async def search_music(keyword: str, limit: int = 30):
+    """
+    搜索音乐 - 使用网易云音乐API
+    """
+    try:
+        import aiohttp
+        
+        # 使用公开的网易云音乐API镜像
+        api_base = "https://netease-cloud-music-api-zeta-sepia.vercel.app"
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{api_base}/search",
+                params={
+                    "keywords": keyword,
+                    "limit": limit,
+                    "type": 1  # 1=单曲
+                }
+            ) as resp:
+                if resp.status != 200:
+                    raise HTTPException(status_code=resp.status, detail="搜索失败")
+                
+                data = await resp.json()
+                
+                # 解析结果
+                songs = []
+                if data.get('result') and data['result'].get('songs'):
+                    for song in data['result']['songs']:
+                        songs.append({
+                            'id': song.get('id'),
+                            'name': song.get('name'),
+                            'artist': ', '.join([ar.get('name', '') for ar in song.get('artists', [])]),
+                            'album': song.get('album', {}).get('name', ''),
+                            'duration': song.get('duration', 0) / 1000,  # 毫秒转秒
+                            'coverURL': song.get('album', {}).get('picUrl', ''),
+                            'audioURL': None  # 需要单独请求
+                        })
+                
+                return {'songs': songs}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"搜索失败: {str(e)}")
+
+
+@app.get("/api/music/url")
+async def get_music_url(id: int):
+    """
+    获取音乐播放URL
+    """
+    try:
+        import aiohttp
+        
+        api_base = "https://netease-cloud-music-api-zeta-sepia.vercel.app"
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{api_base}/song/url",
+                params={
+                    "id": id,
+                    "br": 320000  # 320kbps
+                }
+            ) as resp:
+                if resp.status != 200:
+                    raise HTTPException(status_code=resp.status, detail="获取播放URL失败")
+                
+                data = await resp.json()
+                
+                if data.get('data') and len(data['data']) > 0:
+                    url = data['data'][0].get('url')
+                    return {'url': url}
+                else:
+                    raise HTTPException(status_code=404, detail="未找到播放URL")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取URL失败: {str(e)}")
+
+
+@app.get("/api/music/lyric")
+async def get_music_lyric(id: int):
+    """
+    获取歌词
+    """
+    try:
+        import aiohttp
+        
+        api_base = "https://netease-cloud-music-api-zeta-sepia.vercel.app"
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{api_base}/lyric",
+                params={"id": id}
+            ) as resp:
+                if resp.status != 200:
+                    return {'lyric': None}
+                
+                data = await resp.json()
+                
+                # 优先返回翻译歌词，否则返回原歌词
+                lyric = None
+                if data.get('lrc') and data['lrc'].get('lyric'):
+                    lyric = data['lrc']['lyric']
+                
+                return {'lyric': lyric}
+    except Exception:
+        return {'lyric': None}
 
 
 if __name__ == "__main__":
