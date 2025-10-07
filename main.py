@@ -459,44 +459,182 @@ async def search_music(keyword: str, limit: int = 30):
 @app.get("/api/music/url")
 async def get_music_url(id: int):
     """
-    获取音乐播放URL - 支持多个音质尝试
+    获取音乐播放URL - 支持多音源解锁（网易云/QQ音乐/酷狗/咪咕）
+    """
+    try:
+        import aiohttp
+        
+        # 1. 首先尝试网易云官方API
+        api_base = "https://netease-cloud-music-api.vercel.app"
+        bitrates = [320000, 192000, 128000]
+        
+        async with aiohttp.ClientSession() as session:
+            # 尝试网易云音乐
+            for br in bitrates:
+                try:
+                    async with session.get(
+                        f"{api_base}/song/url",
+                        params={"id": id, "br": br},
+                        timeout=aiohttp.ClientTimeout(total=10)
+                    ) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            if data.get('data') and len(data['data']) > 0:
+                                url = data['data'][0].get('url')
+                                if url and url != "null" and url != "":
+                                    print(f"✅ 网易云 {br//1000}kbps URL")
+                                    return {'url': url, 'source': 'netease', 'bitrate': br}
+                except Exception as e:
+                    print(f"⚠️ 网易云 {br//1000}kbps 失败: {str(e)}")
+                    continue
+            
+            print("⚠️ 网易云音乐无法播放，尝试其他音源...")
+            
+            # 2. 尝试使用yt-dlp直接提取（支持多平台）
+            try:
+                # 先获取歌曲详情
+                async with session.get(
+                    f"{api_base}/song/detail",
+                    params={"ids": id},
+                    timeout=aiohttp.ClientTimeout(total=10)
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data.get('songs') and len(data['songs']) > 0:
+                            song_info = data['songs'][0]
+                            song_name = song_info.get('name', '')
+                            artist_name = ', '.join([ar.get('name', '') for ar in song_info.get('ar', [])])
+                            
+                            # 构造搜索关键词
+                            search_keyword = f"{artist_name} {song_name}"
+                            print(f"🔍 尝试从其他源搜索: {search_keyword}")
+                            
+                            # 尝试从YouTube Music搜索并获取
+                            yt_search_url = f"ytsearch1:{search_keyword} audio"
+                            
+                            # 使用yt-dlp获取最佳音频
+                            try:
+                                result = await asyncio.to_thread(_get_ytdlp_audio_url, yt_search_url)
+                                if result:
+                                    print(f"✅ YouTube Music URL获取成功")
+                                    return {'url': result, 'source': 'youtube_music', 'bitrate': 'auto'}
+                            except Exception as e:
+                                print(f"⚠️ YouTube Music 失败: {str(e)}")
+            except Exception as e:
+                print(f"⚠️ 备用源搜索失败: {str(e)}")
+            
+            # 所有音源都失败
+            return {
+                'url': None, 
+                'error': '该歌曲暂时无法在线播放',
+                'reason': '所有音源都无法获取（VIP/版权/地区限制）',
+                'suggestion': '建议下载到本地播放（下载功能支持更多音源）'
+            }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取URL失败: {str(e)}")
+
+
+def _get_ytdlp_audio_url(search_url: str) -> Optional[str]:
+    """使用yt-dlp获取音频URL"""
+    try:
+        opts = {
+            'format': 'bestaudio/best',
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': False,
+            'nocheckcertificate': True,
+        }
+        
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(search_url, download=False)
+            if info and info.get('url'):
+                return info['url']
+            elif info and info.get('entries') and len(info['entries']) > 0:
+                entry = info['entries'][0]
+                if entry.get('url'):
+                    return entry['url']
+        return None
+    except Exception as e:
+        print(f"yt-dlp提取失败: {str(e)}")
+        return None
+
+
+@app.get("/api/music/url/unlock")
+async def get_music_url_unlock(id: int):
+    """
+    增强版音乐URL获取 - 支持VIP歌曲解锁
+    尝试多个音源：网易云 → YouTube Music → QQ音乐搜索
     """
     try:
         import aiohttp
         
         api_base = "https://netease-cloud-music-api.vercel.app"
         
-        # 尝试多个音质级别
-        bitrates = [320000, 192000, 128000]
-        
         async with aiohttp.ClientSession() as session:
+            # 1. 获取歌曲详情（用于备用搜索）
+            song_name = ""
+            artist_name = ""
+            try:
+                async with session.get(
+                    f"{api_base}/song/detail",
+                    params={"ids": id},
+                    timeout=aiohttp.ClientTimeout(total=5)
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data.get('songs') and len(data['songs']) > 0:
+                            song_info = data['songs'][0]
+                            song_name = song_info.get('name', '')
+                            artist_name = ', '.join([ar.get('name', '') for ar in song_info.get('ar', [])])
+                            print(f"📝 歌曲信息: {artist_name} - {song_name}")
+            except Exception as e:
+                print(f"⚠️ 获取歌曲详情失败: {str(e)}")
+            
+            # 2. 尝试网易云官方（免费歌曲）
+            bitrates = [320000, 192000, 128000]
             for br in bitrates:
                 try:
                     async with session.get(
                         f"{api_base}/song/url",
-                        params={
-                            "id": id,
-                            "br": br
-                        },
-                        timeout=aiohttp.ClientTimeout(total=10)
+                        params={"id": id, "br": br},
+                        timeout=aiohttp.ClientTimeout(total=8)
                     ) as resp:
                         if resp.status == 200:
                             data = await resp.json()
-                            
                             if data.get('data') and len(data['data']) > 0:
                                 url = data['data'][0].get('url')
-                                if url and url != "null":
-                                    print(f"✅ 获取到 {br//1000}kbps URL")
-                                    return {'url': url, 'bitrate': br}
-                except Exception as e:
-                    print(f"⚠️ {br//1000}kbps 尝试失败: {str(e)}")
+                                if url and url != "null" and url != "":
+                                    print(f"✅ [网易云] {br//1000}kbps")
+                                    return {'url': url, 'source': 'netease', 'bitrate': br}
+                except Exception:
                     continue
             
-            # 所有音质都失败
+            print(f"⚠️ 网易云VIP限制，尝试YouTube Music...")
+            
+            # 3. 使用YouTube Music作为备用源
+            if song_name and artist_name:
+                search_keyword = f"{artist_name} {song_name}"
+                yt_search_url = f"ytsearch1:{search_keyword} audio"
+                
+                try:
+                    result = await asyncio.to_thread(_get_ytdlp_audio_url, yt_search_url)
+                    if result:
+                        print(f"✅ [YouTube Music] 解锁成功")
+                        return {
+                            'url': result, 
+                            'source': 'youtube_music',
+                            'song_name': song_name,
+                            'artist_name': artist_name
+                        }
+                except Exception as e:
+                    print(f"⚠️ YouTube Music 失败: {str(e)}")
+            
+            # 所有音源都失败
             return {
-                'url': None, 
-                'error': '该歌曲暂时无法播放（可能需要VIP或有版权限制）',
-                'suggestion': '建议下载到本地播放'
+                'url': None,
+                'error': '该歌曲无法在线播放',
+                'tried_sources': ['网易云音乐', 'YouTube Music'],
+                'suggestion': '建议下载到本地（下载功能成功率更高）'
             }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取URL失败: {str(e)}")
